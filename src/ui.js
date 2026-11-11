@@ -1,22 +1,26 @@
-// 界面：快捷栏、方块图鉴、HUD、提示
-import { DEFS, PALETTE, blockIcon } from './blocks.js';
+// 界面：快捷栏、方块图鉴 / 背包、HUD、提示
+import { DEFS, blockIcon } from './blocks.js';
+import { sfx } from './audio.js';
 
 const $ = (id) => document.getElementById(id);
-const ARROWS = ['↑', '↗', '→', '↘', '↓', '↙', '←', '↖'];
 
 export class UI {
   constructor(game) {
     this.g = game;
-    this.hotbarEl = $('hotbar'); this.hudEl = $('hud'); this.nameEl = $('blockname');
+    this.hotbarEl = $('hotbar'); this.hudEl = $('hud'); this.sideEl = $('side'); this.nameEl = $('blockname');
     this.nameTimer = 0;
+    this.lastToast = new Map();
+    this.hudA = ''; this.hudB = '';
   }
 
   icon(id) { return blockIcon(this.g.atlas.canvas, id); }
 
   renderHotbar() {
-    const g = this.g;
-    this.hotbarEl.innerHTML = g.hotbar.map((id, i) =>
-      `<div class="slot${i === g.slot ? ' on' : ''}"><i>${i + 1}</i>${id ? `<img src="${this.icon(id)}">` : ''}</div>`).join('');
+    const g = this.g, inf = g.rules.infinite;
+    this.hotbarEl.innerHTML = g.hotbar.map((id, i) => {
+      const n = id ? g.count(id) : 0;
+      return `<div class="slot${i === g.slot ? ' on' : ''}${id && !inf && n <= 0 ? ' empty' : ''}"><i>${i + 1}</i>${id ? `<img src="${this.icon(id)}">` : ''}${id && !inf ? `<em>${n}</em>` : ''}</div>`;
+    }).join('');
     const id = g.hotbar[g.slot];
     this.nameEl.textContent = id ? DEFS[id].name : '';
     this.nameEl.style.opacity = 1;
@@ -25,42 +29,37 @@ export class UI {
   }
 
   renderPalette() {
-    const g = this.g, grid = $('grid');
+    const g = this.g, grid = $('grid'), P = g.modeObj.palette();
+    $('pal-title').textContent = P.title;
+    $('pal-tip').textContent = P.tip;
     grid.innerHTML = '';
-    for (const id of PALETTE) {
-      const d = DEFS[id], ok = g.unlocked(id);
+    for (const it of P.items) {
       const el = document.createElement('div');
-      el.className = 'item' + (ok ? '' : ' locked');
-      el.innerHTML = `<img src="${this.icon(id)}">${d.name}${ok ? '' : `<br><span>✦ ${d.unlock}</span>`}`;
-      if (ok) el.onclick = () => { g.hotbar[g.slot] = id; g.setSlot(g.slot); g.closePalette(); };
+      el.className = 'item' + (it.ok ? '' : ' locked');
+      el.innerHTML = `<img src="${this.icon(it.id)}">${DEFS[it.id].name}${it.sub ? `<br><span>${it.sub}</span>` : ''}`;
+      if (it.ok) el.onclick = () => { sfx('pick'); g.hotbar[g.slot] = it.id; g.setSlot(g.slot); g.closePanel(); };
       grid.appendChild(el);
     }
   }
 
+  // 同一句话 1.5 秒内不重复弹
   toast(msg) {
+    const now = performance.now();
+    if (now - (this.lastToast.get(msg) || 0) < 1500) return;
+    this.lastToast.set(msg, now);
+    if (this.lastToast.size > 40) this.lastToast.clear();
     const el = document.createElement('div');
     el.className = 'toast panel';
     el.textContent = msg;
     const box = $('toasts');
     box.appendChild(el);
-    while (box.children.length > 3) box.firstChild.remove();
-    setTimeout(() => el.remove(), 3000);
+    while (box.children.length > 4) box.firstChild.remove();
+    setTimeout(() => el.remove(), 3600);
   }
 
   updateHud() {
-    const g = this.g, p = g.player, n = g.crystals.size;
-    const next = PALETTE.map((id) => DEFS[id]).filter((d) => d.unlock > n).sort((a, b) => a.unlock - b.unlock)[0];
-    const hh = Math.floor(g.time * 24), mm = Math.floor((g.time * 24 - hh) * 60);
-    let nav = '附近没有星晶，去远方看看';
-    const c = g.ents.nearest;
-    if (c) {
-      const dx = c.x - p.pos.x, dz = c.z - p.pos.z, sin = Math.sin(p.yaw), cos = Math.cos(p.yaw);
-      const ang = Math.atan2(dx * cos - dz * sin, -dx * sin - dz * cos);
-      nav = `最近星晶 ${ARROWS[(Math.round(ang / (Math.PI / 4)) + 8) % 8]} ${Math.round(c.dist)} 米`;
-    }
-    this.hudEl.innerHTML =
-      `<b>✦ ${n}</b> 星晶${next ? ` <span class="dim">· 再集 ${next.unlock - n} 颗解锁「${next.name}」</span>` : ' <span class="dim">· 已解锁全部方块</span>'}<br>` +
-      `${nav}<br>` +
-      `<span class="dim">坐标 ${Math.floor(p.pos.x)}, ${Math.floor(p.pos.y)}, ${Math.floor(p.pos.z)} · ${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}${p.fly ? ' · 飞行中' : ''}</span>`;
+    const [a, b] = this.g.modeObj.hud();
+    if (a !== this.hudA) { this.hudA = a; this.hudEl.innerHTML = a; }
+    if (b !== this.hudB) { this.hudB = b; this.sideEl.innerHTML = b; this.sideEl.classList.toggle('hidden', !b); }
   }
 }

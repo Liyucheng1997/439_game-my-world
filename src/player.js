@@ -19,6 +19,8 @@ export class Player {
     this.boost = 0; this.sprint = false;
     this.lastSpace = 0; this.lastW = 0;
     this.swing = 0;
+    this.ground = null;      // 脚下踩着的方块 {id,x,y,z}
+    this.stepD = 0; this.dip = 0; this.wasGround = true; this.wasWater = false; this.landVel = 0;
 
     const hl = new THREE.LineSegments(
       new THREE.EdgesGeometry(new THREE.BoxGeometry(1.004, 1.004, 1.004)),
@@ -39,6 +41,7 @@ export class Player {
         this.lastW = now;
       } else if (e.code === 'KeyF') this.toggleFly();
       else if (/^Digit[1-9]$/.test(e.code)) game.setSlot(+e.code[5] - 1);
+      else game.modeObj.key(e.code);
     });
     addEventListener('keyup', (e) => {
       this.keys.delete(e.code);
@@ -63,8 +66,16 @@ export class Player {
   }
 
   toggleFly() {
+    if (!this.g.rules.fly) { this.g.ui.toast('闯关模式里不能飞行'); return; }
     this.fly = !this.fly;
+    sfx('pick');
     this.g.ui.toast(this.fly ? '飞行模式：开（空格上升，Shift 下降）' : '飞行模式：关');
+  }
+
+  teleport(x, y, z, yaw) {
+    this.pos.set(x, y, z); this.vel.set(0, 0, 0);
+    if (yaw !== undefined) { this.yaw = yaw; this.pitch = 0; }
+    this.boost = 0; this.wasGround = true;
   }
 
   collides(x, y, z) {
@@ -101,11 +112,28 @@ export class Player {
     }
   }
 
+  // 脚下的方块：先看正中间，站在边缘时再看四个角
+  findGround() {
+    const w = this.g.world, p = this.pos, y = Math.floor(p.y - 0.05);
+    for (const [ox, oz] of [[0, 0], [-0.28, -0.28], [0.28, -0.28], [-0.28, 0.28], [0.28, 0.28]]) {
+      const x = Math.floor(p.x + ox), z = Math.floor(p.z + oz), id = w.getBlock(x, y, z);
+      if (DEFS[id].solid) return { id, x, y, z };
+    }
+    return null;
+  }
+
   update(dt) {
     const g = this.g, w = g.world, k = this.keys, p = this.pos, v = this.vel;
     const act = g.active;
+    if (this.fly && !g.rules.fly) this.fly = false;
     this.inWater = DEFS[w.getBlock(Math.floor(p.x), Math.floor(p.y + 0.9), Math.floor(p.z))].liquid;
     this.headInWater = DEFS[w.getBlock(Math.floor(p.x), Math.floor(p.y + EYE), Math.floor(p.z))].liquid;
+    const feetWet = DEFS[w.getBlock(Math.floor(p.x), Math.floor(p.y + 0.2), Math.floor(p.z))].liquid;
+    if (feetWet && !this.wasWater && v.y < -5) {
+      sfx('splash');
+      g.ents.puff(p.x, p.y + 0.4, p.z, [190, 225, 255], { n: 16, speed: 2.5, up: 5, life: 0.6 });
+    }
+    this.wasWater = feetWet;
 
     let f = 0, s = 0;
     if (act) { f = (k.has('KeyW') ? 1 : 0) - (k.has('KeyS') ? 1 : 0); s = (k.has('KeyD') ? 1 : 0) - (k.has('KeyA') ? 1 : 0); }
@@ -120,7 +148,8 @@ export class Player {
 
     const sin = Math.sin(this.yaw), cos = Math.cos(this.yaw);
     const tx = (-sin * f + cos * s) * speed, tz = (-cos * f - sin * s) * speed;
-    const a = 1 - Math.exp(-(this.onGround || this.fly ? 14 : 4) * dt);
+    const icy = this.onGround && this.ground?.id === B.ICE && !this.fly;
+    const a = 1 - Math.exp(-(icy ? 1.5 : this.onGround || this.fly ? 14 : 4) * dt);
     v.x += (tx - v.x) * a; v.z += (tz - v.z) * a;
 
     if (this.fly) {
@@ -131,21 +160,41 @@ export class Player {
       if (space) v.y = Math.min(v.y + 34 * dt, 3.6);
     } else {
       v.y = Math.max(-50, v.y - 28 * dt);
-      if (space && this.onGround) v.y = 8.7;
+      if (space && this.onGround) { v.y = 8.7; sfx('jump'); }
     }
 
+    this.wasGround = this.onGround;
     this.onGround = false;
     this.move(v.x * dt, v.y * dt, v.z * dt);
 
-    if (this.onGround) {
-      const below = w.getBlock(Math.floor(p.x), Math.floor(p.y - 0.05), Math.floor(p.z));
-      if (below === B.BOUNCE && !this.fly) { v.y = space ? 17 : 12.5; this.onGround = false; sfx('bounce'); }
-      else if (below === B.SPEED) this.boost = 0.5;
+    this.ground = this.onGround ? this.findGround() : null;
+    const gr = this.ground;
+    if (gr) {
+      const snd = DEFS[gr.id].snd;
+      if (!this.wasGround && this.landVel < -6 && !this.fly) {
+        const hard = Math.min(1.6, -this.landVel / 14);
+        sfx('land', snd, hard);
+        this.dip = Math.min(0.22, 0.08 * hard);
+        g.ents.puff(p.x, p.y + 0.1, p.z, g.atlas.avg[DEFS[gr.id].tiles[0]], { n: 7, spread: 0.5, speed: 1.6, up: 1.4, life: 0.35 });
+      }
+      if (gr.id === B.BOUNCE && !this.fly) {
+        v.y = space ? 17 : 12.5; this.onGround = false; sfx('bounce');
+        g.ents.puff(p.x, p.y + 0.1, p.z, [255, 150, 200], { n: 8, speed: 2, up: 3, life: 0.4, glow: true });
+      } else if (gr.id === B.SPEED) {
+        if (this.boost <= 0) sfx('speed');
+        this.boost = 0.5;
+      }
+      // 脚步声
+      if (!this.fly && !this.inWater) {
+        this.stepD += Math.hypot(v.x, v.z) * dt;
+        if (this.stepD > 2.1) { this.stepD = 0; sfx('step', snd); }
+      }
     }
     if (p.y < -20) { p.y = CH; v.set(0, 0, 0); }
 
+    this.dip = Math.max(0, this.dip - dt * 0.9);
     const cam = g.camera;
-    cam.position.set(p.x, p.y + EYE, p.z);
+    cam.position.set(p.x, p.y + EYE - this.dip, p.z);
     cam.rotation.set(this.pitch, this.yaw, 0, 'YXZ');
 
     // 准星指向的方块
@@ -156,8 +205,12 @@ export class Player {
     this.cool -= dt;
     this.swing = Math.max(0, this.swing - dt * 5);
     if (act && this.cool <= 0) {
-      if (this.btn[0]) { this.breakBlock(); this.cool = 0.2; }
-      else if (this.btn[2]) { this.placeBlock(); this.cool = 0.2; }
+      const b = this.btn[0] ? 0 : this.btn[2] ? 2 : -1;
+      if (b >= 0) {
+        if (g.modeObj.click(b)) this.btn[b] = false;
+        else if (b === 0) this.breakBlock(); else this.placeBlock();
+        this.cool = 0.2;
+      }
     }
   }
 
@@ -184,38 +237,51 @@ export class Player {
   }
 
   breakBlock() {
-    const h = this.hit;
+    const h = this.hit, g = this.g;
     if (!h) return;
     this.swing = 1;
-    if (h.id === B.BEDROCK) { this.g.ui.toast('基岩太硬了，挖不动'); return; }
-    if (this.g.world.setBlock(h.x, h.y, h.z, 0)) {
-      this.g.ents.burst(h.x + 0.5, h.y + 0.5, h.z + 0.5, DEFS[h.id].tiles[1]);
-      sfx('break');
-      this.g.stats.broken++;
+    if (h.id === B.BEDROCK) { g.ui.toast('基岩太硬了，挖不动'); return; }
+    if (!g.modeObj.canBreak(h)) return;
+    if (g.world.setBlock(h.x, h.y, h.z, 0)) {
+      g.ents.burst(h.x + 0.5, h.y + 0.5, h.z + 0.5, DEFS[h.id].icon ?? DEFS[h.id].tiles[1]);
+      sfx('break', DEFS[h.id].snd);
+      g.stats.broken++;
+      g.modeObj.onBreak(h);
     }
   }
 
   placeBlock() {
-    const h = this.hit, g = this.g;
-    if (!h) return;
-    const id = g.hotbar[g.slot], def = DEFS[id];
-    if (!id) return;
-    const x = h.x + h.nx, y = h.y + h.ny, z = h.z + h.nz;
-    if (y < 1 || y >= CH) { g.ui.toast('这里已经到世界的边界了'); return; }
-    const cur = DEFS[g.world.getBlock(x, y, z)];
-    if (cur.id !== 0 && !cur.liquid && !cur.plant) return;
-    if (def.plant && !DEFS[g.world.getBlock(x, y - 1, z)].solid) return;
-    if (def.solid) {
-      const p = this.pos;
-      if (x + 1 > p.x - HW && x < p.x + HW && z + 1 > p.z - HW && z < p.z + HW && y + 1 > p.y && y < p.y + HEIGHT) return;
+    const h = this.hit, g = this.g, w = g.world, p = this.pos;
+    let x, y, z;
+    if (h) { x = h.x + h.nx; y = h.y + h.ny; z = h.z + h.nz; }
+    else {
+      // 悬空搭桥：低头对着空处时，从脚下的方块往前接
+      const gr = this.ground;
+      if (!gr || this.pitch > -0.3) return;
+      const fx = -Math.sin(this.yaw), fz = -Math.cos(this.yaw);
+      const dx = Math.abs(fx) > Math.abs(fz) ? Math.sign(fx) : 0, dz = dx ? 0 : Math.sign(fz);
+      x = gr.x + dx; y = gr.y; z = gr.z + dz;
+      for (let i = 0; i < 4 && DEFS[w.getBlock(x, y, z)].solid; i++) { x += dx; z += dz; }
     }
+    if (y < 1 || y >= CH) { g.ui.toast('这里已经到世界的边界了'); return; }
+    const cur = DEFS[w.getBlock(x, y, z)];
+    if (cur.id !== 0 && !cur.liquid && !cur.plant) return;
+    const id = g.modeObj.placeId(x, y, z), def = DEFS[id];
+    if (!id) return;
+    if (def.plant && !DEFS[w.getBlock(x, y - 1, z)].solid) return;
+    if (def.solid && x + 1 > p.x - HW && x < p.x + HW && z + 1 > p.z - HW && z < p.z + HW && y + 1 > p.y && y < p.y + HEIGHT) return;
     this.swing = 1;
-    if (g.world.setBlock(x, y, z, id)) { sfx('place'); g.stats.placed++; }
+    if (w.setBlock(x, y, z, id)) {
+      sfx('place', def.snd);
+      g.ents.puff(x + 0.5, y + 0.5, z + 0.5, g.atlas.avg[def.icon ?? def.tiles[1]], { n: 5, spread: 1, speed: 1.2, up: 1, life: 0.25, size: 0.7 });
+      g.stats.placed++;
+      g.modeObj.onPlace(x, y, z, id);
+    }
   }
 
   pick() {
     const h = this.hit, g = this.g;
-    if (!h || h.id === B.BEDROCK || !g.unlocked(h.id)) return;
+    if (!h || h.id === B.BEDROCK || !g.modeObj.unlocked(h.id)) return;
     const at = g.hotbar.indexOf(h.id);
     if (at >= 0) g.setSlot(at);
     else { g.hotbar[g.slot] = h.id; g.setSlot(g.slot); }
