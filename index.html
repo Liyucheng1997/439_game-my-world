@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>方块奇境</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0b1020; color: #fff;
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif; user-select: none; }
+  canvas#view { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  #water { position: fixed; inset: 0; background: rgba(24, 98, 190, .32); pointer-events: none; display: none; }
+  #cross { position: fixed; left: 50%; top: 50%; width: 22px; height: 22px; margin: -11px; pointer-events: none; opacity: .9; }
+  #cross::before, #cross::after { content: ""; position: absolute; background: #fff; box-shadow: 0 0 2px rgba(0,0,0,.8); border-radius: 1px; }
+  #cross::before { left: 10px; top: 2px; width: 2px; height: 18px; }
+  #cross::after { top: 10px; left: 2px; height: 2px; width: 18px; }
+
+  .panel { background: rgba(18, 24, 38, .62); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,.14); border-radius: 14px; }
+  #hud { position: fixed; left: 14px; top: 14px; padding: 10px 14px; font-size: 13px; line-height: 1.7; pointer-events: none; min-width: 190px; }
+  #hud b { color: #8ff3ff; font-size: 15px; }
+  #hud .dim { opacity: .72; }
+
+  #hotbar { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); display: flex; gap: 6px; padding: 7px; }
+  .slot { width: 54px; height: 54px; border-radius: 10px; background: rgba(255,255,255,.08); border: 2px solid transparent;
+    display: flex; align-items: center; justify-content: center; position: relative; transition: transform .12s, border-color .12s; }
+  .slot img { width: 42px; height: 42px; image-rendering: pixelated; }
+  .slot i { position: absolute; left: 5px; top: 2px; font-size: 10px; font-style: normal; opacity: .6; }
+  .slot.on { border-color: #fff; background: rgba(255,255,255,.2); transform: translateY(-4px) scale(1.06); }
+  #blockname { position: fixed; left: 50%; bottom: 92px; transform: translateX(-50%); font-size: 14px; padding: 4px 12px;
+    text-shadow: 0 1px 3px rgba(0,0,0,.8); pointer-events: none; transition: opacity .4s; }
+
+  #toasts { position: fixed; left: 50%; top: 18%; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 8px; pointer-events: none; }
+  .toast { padding: 9px 18px; font-size: 15px; animation: pop 3s forwards; }
+  @keyframes pop { 0% { opacity: 0; transform: translateY(10px) scale(.95); } 8% { opacity: 1; transform: none; } 80% { opacity: 1; } 100% { opacity: 0; transform: translateY(-8px); } }
+
+  .overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(8, 12, 24, .5); }
+  .hidden { display: none !important; }
+  #menu .card { padding: 34px 44px; text-align: center; max-width: 560px; }
+  #menu h1 { margin: 0; font-size: 46px; letter-spacing: 6px; background: linear-gradient(120deg, #8ff3ff, #b9ffa8 55%, #ffe28a);
+    -webkit-background-clip: text; background-clip: text; color: transparent; }
+  #menu p.sub { margin: 8px 0 24px; opacity: .8; }
+  button { font: inherit; color: #fff; border: 0; cursor: pointer; border-radius: 999px; padding: 12px 30px; font-size: 17px; transition: transform .12s, filter .12s; }
+  button:hover { transform: translateY(-1px); filter: brightness(1.12); }
+  #btn-play { background: #2f8cff; font-weight: 600; padding: 13px 54px; }
+  #btn-new { background: rgba(255,255,255,.14); font-size: 14px; padding: 9px 20px; margin-left: 10px; }
+  #help { margin-top: 26px; display: grid; grid-template-columns: auto 1fr auto 1fr; gap: 7px 12px; text-align: left; font-size: 13px; opacity: .9; }
+  kbd { background: rgba(255,255,255,.16); border-radius: 6px; padding: 2px 8px; font: inherit; font-size: 12px; white-space: nowrap; }
+
+  #palette .card { padding: 22px 26px; width: min(720px, 92vw); }
+  #palette h2 { margin: 0 0 4px; font-size: 20px; }
+  #palette .tip { font-size: 13px; opacity: .7; margin-bottom: 14px; }
+  #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(76px, 1fr)); gap: 8px; max-height: 60vh; overflow: auto; }
+  #grid { scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.3) transparent; padding-right: 4px; }
+  .item { border-radius: 12px; background: rgba(255,255,255,.07); padding: 8px 2px 6px; text-align: center; font-size: 12px; cursor: pointer; border: 2px solid transparent; }
+  .item:hover { background: rgba(255,255,255,.18); border-color: rgba(255,255,255,.5); }
+  .item img { width: 44px; height: 44px; image-rendering: pixelated; display: block; margin: 0 auto 3px; }
+  .item.locked { cursor: not-allowed; opacity: .45; }
+  .item.locked img { filter: grayscale(1) brightness(.6); }
+  .item.locked span { color: #8ff3ff; }
+
+  #loading { position: fixed; inset: 0; background: #0b1020; display: flex; align-items: center; justify-content: center; font-size: 18px; letter-spacing: 2px; transition: opacity .6s; }
+</style>
+</head>
+<body>
+<canvas id="view"></canvas>
+<div id="water"></div>
+<div id="cross"></div>
+<div id="hud" class="panel"></div>
+<div id="blockname"></div>
+<div id="hotbar" class="panel"></div>
+<div id="toasts"></div>
+
+<div id="palette" class="overlay hidden">
+  <div class="card panel">
+    <h2>方块图鉴</h2>
+    <div class="tip">点击方块放进当前选中的快捷栏格子 · 收集星晶 ✦ 解锁更多方块 · 按 E 或 Esc 关闭</div>
+    <div id="grid"></div>
+  </div>
+</div>
+
+<div id="menu" class="overlay">
+  <div class="card panel">
+    <h1>方块奇境</h1>
+    <p class="sub">一块一块，搭出属于你的世界</p>
+    <button id="btn-play">开始游戏</button><button id="btn-new">新世界</button>
+    <div id="help">
+      <kbd>W A S D</kbd><span>移动（双击 W 或按住 Shift 奔跑）</span>
+      <kbd>空格</kbd><span>跳跃 / 游泳上浮</span>
+      <kbd>鼠标左键</kbd><span>破坏方块</span>
+      <kbd>鼠标右键</kbd><span>放置方块</span>
+      <kbd>鼠标中键</kbd><span>吸取准星处的方块</span>
+      <kbd>1-9 / 滚轮</kbd><span>切换快捷栏</span>
+      <kbd>E</kbd><span>打开方块图鉴</span>
+      <kbd>F / 双击空格</kbd><span>开关飞行</span>
+      <kbd>Esc</kbd><span>暂停（自动存档）</span>
+      <kbd>✦ 星晶</kbd><span>跟着光柱去收集，解锁新方块</span>
+    </div>
+  </div>
+</div>
+<div id="loading">正在生成世界…</div>
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>
